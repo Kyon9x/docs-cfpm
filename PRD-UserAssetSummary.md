@@ -37,8 +37,9 @@ Table: `user_asset_summaries`
 - id: uuid PK
 - userId: uuid NOT NULL, FK -> `users.id`
 - assetId: uuid NOT NULL, FK -> `assets.id`
-- shar es: numeric(28,8) NOT NULL, CHECK shares >= 0 (caculated from transactions table)
+- shares: numeric(28,8) NOT NULL, CHECK shares >= 0 (calculated from transactions table)
 - purchaseValue: numeric(19,4) NOT NULL, CHECK purchaseValue >= 0  // in asset base currency calculate from transactions
+- purchaseDate: date NULL  // inception date of the current position; see rules below
 - currentValue: numeric(19,4) NULL
 - perfAllRatio: numeric(19,12) NULL
 - perfYTDRatio: numeric(19,12) NULL
@@ -51,7 +52,7 @@ Table: `user_asset_summaries`
 - lastHoldingsUpdatedAt: timestamptz NULL        // for idempotency/freshness checks
 - lastCalculatedAt: timestamptz NULL
 - createdAt: timestamptz DEFAULT now()
-- updatedAt: timestamptz auto
+- updatedAt: timestamptz auto (updated on each write)
 
 Constraints and Indexes:
 - UNIQUE (userId, assetId)
@@ -65,6 +66,7 @@ Constraints and Indexes:
 - Shares: sum of quantities from BUY minus SELL; ignore currency conversions (no multi-currency buys). Rebalances/splits/dividends handled as below.
 - Purchase value (cost basis): average cost method, including fees and taxes from transactions; computed in asset base currency.
 - Transfers between wallets do not change shares or purchase value; only location.
+- Purchase date: the inception date of the current holding. This is the earliest BUY date contributing to the remaining position after matching prior SELL quantities. If the position is fully closed and later re-opened, `purchaseDate` resets to the first BUY date of the new position. If derivation is ambiguous (e.g., missing historical data), leave `purchaseDate` null.
 
 Detailed per-transaction handling
 - BUY: increase `shares += quantity`; increase `purchaseValue += quantity * price + fee + tax`.
@@ -181,6 +183,8 @@ Mitigations
   - `perfYTDRatio` and derived `perfYTDPct`
   - `perf{1..5}yRatio` and derived percents
 
+Note: Optional currency conversion may be applied at read-time based on the client’s requested currency; ratios remain dimensionless.
+
 ## Performance & Caching
 - Read path is O(1) against precomputed columns; minimal additional caching required.
 - Optionally use in-memory TTL cache for hot requests.
@@ -189,6 +193,11 @@ Mitigations
 - 400: validation errors (on writes elsewhere managing this table)
 - 404: not found (when reading specific rows)
 - Cron errors: logged and observable; do not surface to clients directly.
+
+## Environment Variables
+
+- `USER_ASSET_SUMMARY_DEBOUNCE_MS` (default: 120000) — debounce/coalesce window for event-driven recomputations
+- `USER_ASSET_SUMMARY_CRON` (default: `0 * * * *`) — cron schedule for periodic full sweep
 
 ## Open Questions
 - Debounce window defaults and per-asset concurrency limits for event-driven recompute.
